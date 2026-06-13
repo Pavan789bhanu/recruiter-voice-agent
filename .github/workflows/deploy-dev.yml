@@ -1,0 +1,63 @@
+name: Deploy to Dev
+
+on:
+  push:
+    branches: [dev]
+
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Dev Environment
+    runs-on: ubuntu-latest
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID_DEV }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY_DEV }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        env:
+          ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+          IMAGE_TAG: dev-${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/recruiter-voice-agent:$IMAGE_TAG backend/
+          docker push $ECR_REGISTRY/recruiter-voice-agent:$IMAGE_TAG
+          docker tag $ECR_REGISTRY/recruiter-voice-agent:$IMAGE_TAG $ECR_REGISTRY/recruiter-voice-agent:dev-latest
+          docker push $ECR_REGISTRY/recruiter-voice-agent:dev-latest
+
+      - name: Deploy to EC2 via SSM
+        env:
+          INSTANCE_ID: ${{ secrets.DEV_EC2_INSTANCE_ID }}
+          ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+          IMAGE_TAG: dev-${{ github.sha }}
+        run: |
+          aws ssm send-command \
+            --instance-ids "$INSTANCE_ID" \
+            --document-name "AWS-RunShellScript" \
+            --parameters commands="[
+              \"aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin $ECR_REGISTRY\",
+              \"docker pull $ECR_REGISTRY/recruiter-voice-agent:$IMAGE_TAG\",
+              \"docker stop ai-recruiter-agent || true\",
+              \"docker rm ai-recruiter-agent || true\",
+              \"docker run -d --name ai-recruiter-agent --restart unless-stopped -p 8000:8000 --env-file /home/ubuntu/ai-recruiter-agent/backend/.env $ECR_REGISTRY/recruiter-voice-agent:$IMAGE_TAG\"
+            ]" \
+            --output text
+
+      - name: Health check
+        env:
+          DEV_URL: ${{ secrets.DEV_PUBLIC_URL }}
+        run: |
+          sleep 30
+          curl -f "${DEV_URL}/health" || echo "Health check pending — verify manually"

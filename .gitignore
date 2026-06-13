@@ -1,0 +1,49 @@
+# Environment & secrets
+.env
+.env.*
+!.env.example
+backend/.env
+*.pem
+*.key
+
+# Personal resume (use resume_context.example.md as template)
+backend/resume_context.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Runtime / temp
+/tmp/
+*.log
+
+# iOS / Xcode
+*.xcuserstate
+DerivedData/
+build/
+
+# One-time setup scripts (not part of the application)
+push-to-github.sh

@@ -1,0 +1,111 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches: [main, dev]
+
+concurrency:
+  group: pr-checks-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  secret-scan:
+    name: Secret Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Scan for secrets
+        uses: trufflesecurity/trufflehog@main
+        with:
+          extra_args: --only-verified
+
+  lint:
+    name: Lint (Ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Ruff
+        run: pip install ruff
+      - name: Run Ruff
+        run: ruff check backend/ tests/
+
+  unit-tests:
+    name: Unit Tests (Python 3.12)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install -r backend/requirements.txt
+          pip install pytest pytest-asyncio pytest-cov
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
+        env:
+          TWILIO_ACCOUNT_SID: ACtest000000000000000000000000000000
+          TWILIO_AUTH_TOKEN: test_auth_token
+          TWILIO_PHONE_NUMBER: "+15005550006"
+          DEEPGRAM_API_KEY: test_deepgram_key
+          ANTHROPIC_API_KEY: sk-ant-test000000
+          ELEVENLABS_API_KEY: test_elevenlabs_key
+          PUBLIC_URL: https://test.example.com
+
+  type-check:
+    name: Type Check (Pyright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          pip install -r backend/requirements.txt
+          pip install pyright
+      - name: Run Pyright
+        run: pyright backend/ --level warning
+        continue-on-error: false
+
+  security:
+    name: Security Scan (Bandit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Bandit
+        run: pip install bandit
+      - name: Run Bandit
+        run: bandit -r backend/ -c pyproject.toml
+
+  docker-build:
+    name: Docker Build Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -t recruiter-voice-agent:ci backend/
+
+  summary-dev:
+    name: All Dev PR Checks Passed
+    if: github.base_ref == 'dev'
+    needs: [secret-scan, lint, unit-tests, type-check, security, docker-build]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "All dev PR checks passed."
+
+  summary-main:
+    name: All Main PR Checks Passed
+    if: github.base_ref == 'main'
+    needs: [secret-scan, lint, unit-tests, type-check, security, docker-build]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "All main PR checks passed."
