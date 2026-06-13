@@ -47,7 +47,6 @@ iOS companion app — live transcript + AI toggle
 - **Live iOS companion app** — Watch the transcript, toggle AI on/off mid-call
 - **Voice cloning ready** — ElevenLabs can sound exactly like you
 - **Audit trail** — Every call saved as a JSON transcript
-- **AWS Polly fallback** — Automatic TTS fallback if ElevenLabs is unavailable
 - **Push notifications** — Instant iPhone alert when a human recruiter calls
 
 ---

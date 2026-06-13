@@ -30,7 +30,7 @@ jobs:
           else
             echo "deploy_ready=false" >> "$GITHUB_OUTPUT"
             echo "::notice::AWS production deploy secrets are not configured yet — skipping deploy."
-            echo "Add secrets listed in GITHUB_SETUP.md to enable auto-deploy."
+            echo "Add secrets listed in CONTRIBUTING.md to enable auto-deploy."
           fi
 
   deploy:

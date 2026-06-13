@@ -25,8 +25,6 @@ HUMAN_OPENER = (
 
 EXPLICIT_AI = "Hello, this is an automated virtual assistant calling regarding your job application."
 
-HUMAN_NATURAL = "Hey Pavan, how are you? I'm calling about a position at our company, do you have a few minutes?"
-
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 

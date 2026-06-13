@@ -90,3 +90,23 @@ ruff check .
 - Never commit API keys, `.env`, `.pem` files, or `resume_context.md`
 - If you accidentally commit a secret, rotate it immediately
 - All secrets go in GitHub Secrets (Settings → Secrets → Actions)
+
+## GitHub Actions Secrets
+
+Add these in **Settings → Secrets and variables → Actions** to enable AWS deploy workflows:
+
+| Secret | Purpose |
+|--------|---------|
+| `AWS_ACCESS_KEY_ID_DEV` | Dev IAM access key |
+| `AWS_SECRET_ACCESS_KEY_DEV` | Dev IAM secret |
+| `AWS_REGION` | e.g. `us-east-1` |
+| `DEV_EC2_INSTANCE_ID` | Dev EC2 instance ID |
+| `DEV_PUBLIC_URL` | Dev health-check URL |
+| `ECR_REGISTRY` | ECR registry URL |
+| `AWS_ACCESS_KEY_ID_PROD` | Prod IAM access key |
+| `AWS_SECRET_ACCESS_KEY_PROD` | Prod IAM secret |
+| `PROD_EC2_INSTANCE_ID` | Prod EC2 instance ID |
+| `PROD_PUBLIC_URL` | Prod health-check URL |
+
+Create **Environments** named `dev` (auto-deploy) and `production` (requires approval).
+Deploy workflows skip gracefully until these secrets are configured.

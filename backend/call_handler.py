@@ -18,7 +18,7 @@ import logging
 import os
 
 from fastapi import WebSocket, WebSocketDisconnect
-from twilio.twiml.voice_response import Connect, Gather, Stream, VoiceResponse
+from twilio.twiml.voice_response import Connect, Stream, VoiceResponse
 
 from ai_engine import close_session, get_or_create_session
 from config import AI_CONFIDENCE_THRESHOLD, FORWARD_TO_NUMBER, PUBLIC_URL
@@ -70,21 +70,6 @@ def twiml_forward_to_human(to_number: str) -> str:
         voice="Polly.Joanna-Neural",
     )
     response.dial(to_number)
-    return str(response)
-
-
-def twiml_gather_fallback(call_sid: str) -> str:
-    """Gather DTMF/speech when streaming isn't available."""
-    response = VoiceResponse()
-    gather = Gather(
-        input="speech",
-        action=f"{PUBLIC_URL}/webhook/speech/{call_sid}",
-        method="POST",
-        timeout=5,
-        speech_timeout="auto",
-        language="en-US",
-    )
-    response.append(gather)
     return str(response)
 
 
@@ -257,7 +242,7 @@ async def _twilio_play(call_sid: str, audio_url: str):
     from twilio.rest import Client
 
     from config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(
         None,
         lambda: Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
@@ -273,7 +258,7 @@ async def _twilio_redirect(call_sid: str, to_number: str):
     from twilio.rest import Client
 
     from config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(
         None,
         lambda: Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
