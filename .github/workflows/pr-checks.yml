@@ -17,8 +17,9 @@ jobs:
         with:
           fetch-depth: 0
       - name: Scan for secrets
-        uses: trufflesecurity/trufflehog@main
+        uses: trufflesecurity/trufflehog@v3.88.34
         with:
+          path: ./
           extra_args: --only-verified
 
   lint:
@@ -71,7 +72,6 @@ jobs:
           pip install pyright
       - name: Run Pyright
         run: pyright backend/ --level warning
-        continue-on-error: false
 
   security:
     name: Security Scan (Bandit)

@@ -3,14 +3,40 @@ name: Deploy to Dev
 on:
   push:
     branches: [dev]
+  workflow_dispatch:
 
 concurrency:
   group: deploy-dev
   cancel-in-progress: false
 
 jobs:
+  preflight:
+    name: Check deploy secrets
+    runs-on: ubuntu-latest
+    outputs:
+      deploy_ready: ${{ steps.check.outputs.deploy_ready }}
+    steps:
+      - id: check
+        env:
+          AWS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID_DEV }}
+          AWS_SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY_DEV }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+          INSTANCE_ID: ${{ secrets.DEV_EC2_INSTANCE_ID }}
+        run: |
+          if [ -n "$AWS_KEY" ] && [ -n "$AWS_SECRET" ] && [ -n "$AWS_REGION" ] && \
+             [ -n "$ECR_REGISTRY" ] && [ -n "$INSTANCE_ID" ]; then
+            echo "deploy_ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy_ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::AWS dev deploy secrets are not configured yet — skipping deploy."
+            echo "Add secrets listed in GITHUB_SETUP.md to enable auto-deploy."
+          fi
+
   deploy:
     name: Deploy to Dev Environment
+    needs: preflight
+    if: needs.preflight.outputs.deploy_ready == 'true'
     runs-on: ubuntu-latest
     environment: dev
     steps:
@@ -42,12 +68,13 @@ jobs:
           INSTANCE_ID: ${{ secrets.DEV_EC2_INSTANCE_ID }}
           ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
           IMAGE_TAG: dev-${{ github.sha }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
           aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
             --parameters commands="[
-              \"aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin $ECR_REGISTRY\",
+              \"aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY\",
               \"docker pull $ECR_REGISTRY/recruiter-voice-agent:$IMAGE_TAG\",
               \"docker stop ai-recruiter-agent || true\",
               \"docker rm ai-recruiter-agent || true\",
@@ -59,5 +86,17 @@ jobs:
         env:
           DEV_URL: ${{ secrets.DEV_PUBLIC_URL }}
         run: |
-          sleep 30
-          curl -f "${DEV_URL}/health" || echo "Health check pending — verify manually"
+          if [ -n "$DEV_URL" ]; then
+            sleep 30
+            curl -f "${DEV_URL}/health" || echo "Health check pending — verify manually"
+          else
+            echo "DEV_PUBLIC_URL not set — skipping health check"
+          fi
+
+  skip-notice:
+    name: Deploy Skipped (secrets not configured)
+    needs: preflight
+    if: needs.preflight.outputs.deploy_ready != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Dev deploy skipped — configure AWS secrets in repo Settings to enable."
