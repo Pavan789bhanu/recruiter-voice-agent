@@ -3,14 +3,40 @@ name: Deploy to Production
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: deploy-prod
   cancel-in-progress: false
 
 jobs:
+  preflight:
+    name: Check deploy secrets
+    runs-on: ubuntu-latest
+    outputs:
+      deploy_ready: ${{ steps.check.outputs.deploy_ready }}
+    steps:
+      - id: check
+        env:
+          AWS_KEY: ${{ secrets.AWS_ACCESS_KEY_ID_PROD }}
+          AWS_SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY_PROD }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+          INSTANCE_ID: ${{ secrets.PROD_EC2_INSTANCE_ID }}
+        run: |
+          if [ -n "$AWS_KEY" ] && [ -n "$AWS_SECRET" ] && [ -n "$AWS_REGION" ] && \
+             [ -n "$ECR_REGISTRY" ] && [ -n "$INSTANCE_ID" ]; then
+            echo "deploy_ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy_ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::AWS production deploy secrets are not configured yet — skipping deploy."
+            echo "Add secrets listed in GITHUB_SETUP.md to enable auto-deploy."
+          fi
+
   deploy:
     name: Deploy to Production
+    needs: preflight
+    if: needs.preflight.outputs.deploy_ready == 'true'
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -42,12 +68,13 @@ jobs:
           INSTANCE_ID: ${{ secrets.PROD_EC2_INSTANCE_ID }}
           ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
           IMAGE_TAG: prod-${{ github.sha }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
           aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
             --parameters commands="[
-              \"aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin $ECR_REGISTRY\",
+              \"aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY\",
               \"docker pull $ECR_REGISTRY/recruiter-voice-agent:$IMAGE_TAG\",
               \"docker stop ai-recruiter-agent || true\",
               \"docker rm ai-recruiter-agent || true\",
@@ -59,8 +86,12 @@ jobs:
         env:
           PROD_URL: ${{ secrets.PROD_PUBLIC_URL }}
         run: |
-          sleep 30
-          curl -f "${PROD_URL}/health" || echo "Health check pending — verify manually"
+          if [ -n "$PROD_URL" ]; then
+            sleep 30
+            curl -f "${PROD_URL}/health" || echo "Health check pending — verify manually"
+          else
+            echo "PROD_PUBLIC_URL not set — skipping health check"
+          fi
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -68,3 +99,11 @@ jobs:
           tag_name: v${{ github.run_number }}
           name: Release v${{ github.run_number }}
           generate_release_notes: true
+
+  skip-notice:
+    name: Deploy Skipped (secrets not configured)
+    needs: preflight
+    if: needs.preflight.outputs.deploy_ready != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Production deploy skipped — configure AWS secrets in repo Settings to enable."
