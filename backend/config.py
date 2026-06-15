@@ -32,6 +32,11 @@ PUBLIC_URL           = os.environ["PUBLIC_URL"]  # e.g. https://yourserver.examp
 # ── Forwarding (if human detected, ring this number) ─────────────────────────
 FORWARD_TO_NUMBER    = os.environ.get("FORWARD_TO_NUMBER", "")   # your real cell number
 
+# When False, a "human" classification will NOT forward/hang up — the AI agent
+# keeps handling the call. Keep this off until forwarding + push are set up and
+# the detector is tuned, otherwise misclassifications will drop live calls.
+ENABLE_HUMAN_FORWARDING = os.environ.get("ENABLE_HUMAN_FORWARDING", "false").lower() in ("1", "true", "yes")
+
 # ── AI Detection thresholds ──────────────────────────────────────────────────
 AI_CONFIDENCE_THRESHOLD = float(os.environ.get("AI_CONFIDENCE_THRESHOLD", "0.65"))
 
