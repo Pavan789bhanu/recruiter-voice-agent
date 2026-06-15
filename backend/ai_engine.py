@@ -6,6 +6,7 @@ conversation history. Generates concise, professional spoken responses.
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import cast
 
@@ -27,6 +28,31 @@ def _load_resume() -> str:
 
 RESUME_CONTEXT = _load_resume()
 
+
+# ── Candidate identity (derived from the resume — never hardcoded) ────────────
+
+def _extract_candidate_name(resume: str) -> str:
+    """Pull the candidate's name from the resume so nothing is hardcoded."""
+    # Prefer an explicit "**Name**: ..." field.
+    m = re.search(r"\*\*\s*Name\s*\*\*\s*:\s*(.+)", resume)
+    if m:
+        return m.group(1).strip()
+    # Fall back to the profile header: "# Candidate Profile — <name>".
+    m = re.search(r"#\s*Candidate Profile\s*[—\-:]\s*(.+)", resume)
+    if m:
+        return m.group(1).strip()
+    return ""
+
+CANDIDATE_NAME = _extract_candidate_name(RESUME_CONTEXT)
+CANDIDATE_FIRST_NAME = CANDIDATE_NAME.split()[0] if CANDIDATE_NAME else ""
+
+
+def opening_greeting() -> str:
+    """A short, non-leading opener using the candidate's real name."""
+    if CANDIDATE_FIRST_NAME:
+        return f"Hello, this is {CANDIDATE_FIRST_NAME}."
+    return "Hello, thanks for calling."
+
 SYSTEM_PROMPT = f"""You are an AI voice agent speaking on behalf of the job candidate described below.
 You are on a live phone call with a recruiter. Your job is to answer their questions accurately,
 professionally, and concisely — as if you ARE the candidate.
@@ -38,10 +64,19 @@ CRITICAL RULES:
 4. NEVER fabricate experience not listed in the profile below
 5. If asked something not in the profile, say: "That's a great question — I'd love to follow up
    on that over email to give you a complete answer."
-6. At natural pause points, confirm understanding: "Does that answer your question?"
-7. If asked about salary/compensation, give the listed range confidently
-8. End calls graciously with: "Thank you for your time — I'm very excited about this opportunity
+6. If asked about salary/compensation, give the listed range confidently
+7. End calls graciously with: "Thank you for your time — I'm very excited about this opportunity
    and look forward to next steps."
+
+LET THE RECRUITER LEAD THE CALL:
+- The recruiter called YOU. Let them explain who they are and why they're calling.
+   Do NOT drive the conversation or pepper them with questions like "How can I help you?"
+- Only respond to what they actually said. Answer their question, then stop and let them continue.
+- Do NOT fill silence or add filler. A short, direct answer is better than a rambling one.
+- If their message is a fragment, unclear, or you genuinely didn't catch the purpose yet,
+   respond with a brief, natural prompt ONCE (e.g., "Sure — what's this regarding?") rather than
+   guessing or launching into an unrelated answer. Never repeat the same clarifying line twice.
+- Don't re-introduce yourself or re-greet on every turn; you already said hello.
 
 CANDIDATE PROFILE:
 ─────────────────────────────────────────────────────────────────────────────

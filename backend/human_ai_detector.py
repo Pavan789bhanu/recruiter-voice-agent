@@ -101,15 +101,28 @@ class HumanAIDetector:
         # Score on [0, 1]
         self._ai_score = min(len(ai_signals) * 0.25, 1.0)
         self._human_score = min(len(human_signals) * 0.20, 1.0)
-        confidence = max(self._ai_score - self._human_score * 0.5, 0.0)
+        ai_confidence = max(self._ai_score - self._human_score * 0.5, 0.0)
+        human_confidence = max(self._human_score - self._ai_score * 0.5, 0.0)
 
-        # Decide early if very confident, or after 60 words
-        if confidence >= self.threshold or self._total_words >= 60:
-            is_ai = confidence >= self.threshold
+        decided: tuple[bool, float, list[str]] | None = None
+        if ai_confidence >= self.threshold:
+            decided = (True, ai_confidence, ai_signals)
+        elif human_confidence >= self.threshold:
+            # Forward to a human ONLY on positive human evidence — never just
+            # because AI signals were absent.
+            decided = (False, human_confidence, human_signals)
+        elif self._total_words >= 60:
+            # Plenty of speech but no strong signal either way. Absence of AI
+            # markers is NOT proof of a human, and forwarding is destructive
+            # (it ends the call). Default to letting the AI agent handle it.
+            decided = (True, ai_confidence, ai_signals)
+
+        if decided is not None:
+            is_ai, confidence, signals = decided
             self.result = DetectionResult(
                 is_ai=is_ai,
                 confidence=confidence,
-                signals=ai_signals if is_ai else human_signals,
+                signals=signals,
                 recommendation=(
                     "AI caller detected — activating AI responder."
                     if is_ai
