@@ -47,3 +47,6 @@ build/
 
 # One-time setup scripts (not part of the application)
 push-to-github.sh
+
+# Local dev tooling (not part of the application)
+pr_kit/

@@ -1,112 +1,119 @@
 # Contributing to Recruiter Voice Agent
 
-## Branch Strategy
+Thank you for your interest in contributing! This project uses a **maintainer-only** workflow for production branches and an open **`public`** branch for community contributions.
+
+---
+
+## Branch overview
 
 ```
-main (production)
- └── dev (integration / staging)
-      └── feature/your-feature-name
-      └── fix/short-description
-      └── hotfix/critical-fix  (branches from main)
+main (production)          ← maintainer-only, locked
+ └── dev (integration)     ← maintainer-only, locked
+      └── public            ← open for community PRs ✓
+           └── feature/your-feature-name
 ```
 
-### Rules
+| Branch | Who can open PRs? | Purpose |
+|--------|-------------------|---------|
+| `public` | **Everyone** (forks welcome) | Community contributions — review & merge here |
+| `dev` | **Maintainers only** | Integration / staging — fork PRs are auto-closed |
+| `main` | **Maintainers only** | Production — fork PRs are auto-closed |
 
-- **Never commit directly to `main` or `dev`** — always use a PR
-- `feature/*` branches → PR to `dev`
-- `hotfix/*` branches → PR to `main` AND back-merge into `dev`
-- All PRs require at least 1 approving review
-- All CI checks must pass before merge
+> **Important:** Do **not** open pull requests targeting `main` or `dev`. They will be automatically closed. Always target **`public`**.
 
-## Development Workflow
+---
+
+## For contributors (external)
+
+### 1. Fork and clone
 
 ```bash
-# 1. Start from dev
-git checkout dev
-git pull origin dev
-
-# 2. Create your feature branch
-git checkout -b feature/add-voice-cloning
-
-# 3. Make changes, commit often
-git add .
-git commit -m "feat: add ElevenLabs voice cloning endpoint"
-
-# 4. Push and open PR to dev
-git push origin feature/add-voice-cloning
-# Open PR on GitHub: base=dev, compare=feature/add-voice-cloning
+git clone https://github.com/YOUR_USERNAME/recruiter-voice-agent.git
+cd recruiter-voice-agent
+git remote add upstream https://github.com/Pavan789bhanu/recruiter-voice-agent.git
 ```
 
-## Commit Message Format
+### 2. Branch from `public`
 
-Follow [Conventional Commits](https://www.conventionalcommits.org/):
-
-```
-<type>: <short description>
-
-[optional body]
-[optional footer]
+```bash
+git fetch upstream
+git checkout -b feature/my-improvement upstream/public
 ```
 
-Types: `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `ci`, `perf`
-
-Examples:
-```
-feat: add real-time caller classification API
-fix: handle Deepgram websocket reconnect on timeout
-docs: update AWS deployment steps for EC2 t3.small
-test: add unit tests for human_ai_detector scoring
-ci: add Docker build check to PR workflow
-```
-
-## PR Checklist
-
-Before opening a PR, verify:
-- [ ] Tests pass locally: `pytest tests/`
-- [ ] Linting passes: `ruff check backend/`
-- [ ] No secrets or `.env` files committed
-- [ ] `resume_context.md` is NOT committed (it's in `.gitignore`)
-- [ ] PR description filled out using the template
-
-## Running Tests Locally
+### 3. Make changes and test
 
 ```bash
 cd backend
 pip install -r requirements.txt
-pip install pytest pytest-asyncio pytest-cov ruff
-
-# Run all tests
-pytest tests/ -v
-
-# Run with coverage
-pytest tests/ --cov=. --cov-report=term-missing
-
-# Lint
+pip install pytest ruff
+pytest ../tests/ -v
 ruff check .
 ```
 
+### 4. Open a PR to `public`
+
+```bash
+git push origin feature/my-improvement
+```
+
+On GitHub, open a pull request with:
+- **Base branch:** `public`
+- **Compare branch:** your `feature/my-improvement`
+
+All CI checks must pass before a maintainer can merge.
+
+### What happens after merge?
+
+Maintainers review accepted changes on `public` and periodically promote them into `dev` → `main` for deployment. You do not need access to those branches.
+
+---
+
+## For maintainers (internal)
+
+```bash
+git checkout dev
+git pull origin dev
+
+# Promote reviewed public changes into dev
+git merge origin/public
+git push origin dev
+
+# When ready for production
+# Open PR: dev → main
+```
+
+Never commit API keys, `.env`, or `resume_context.md`.
+
+---
+
+## Commit message format
+
+Follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+feat: add real-time caller classification API
+fix: handle Deepgram websocket reconnect on timeout
+docs: update AWS deployment steps
+test: add unit tests for human_ai_detector scoring
+```
+
+Types: `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `ci`, `perf`
+
+---
+
+## PR checklist
+
+Before opening a PR to `public`, verify:
+
+- [ ] Tests pass locally: `pytest tests/ -v`
+- [ ] Lint passes: `ruff check backend/ tests/`
+- [ ] No secrets, `.env`, or `resume_context.md` committed
+- [ ] PR targets **`public`** (not `main` or `dev`)
+- [ ] PR description filled out using the template
+
+---
+
 ## Security
 
-- Never commit API keys, `.env`, `.pem` files, or `resume_context.md`
-- If you accidentally commit a secret, rotate it immediately
-- All secrets go in GitHub Secrets (Settings → Secrets → Actions)
-
-## GitHub Actions Secrets
-
-Add these in **Settings → Secrets and variables → Actions** to enable AWS deploy workflows:
-
-| Secret | Purpose |
-|--------|---------|
-| `AWS_ACCESS_KEY_ID_DEV` | Dev IAM access key |
-| `AWS_SECRET_ACCESS_KEY_DEV` | Dev IAM secret |
-| `AWS_REGION` | e.g. `us-east-1` |
-| `DEV_EC2_INSTANCE_ID` | Dev EC2 instance ID |
-| `DEV_PUBLIC_URL` | Dev health-check URL |
-| `ECR_REGISTRY` | ECR registry URL |
-| `AWS_ACCESS_KEY_ID_PROD` | Prod IAM access key |
-| `AWS_SECRET_ACCESS_KEY_PROD` | Prod IAM secret |
-| `PROD_EC2_INSTANCE_ID` | Prod EC2 instance ID |
-| `PROD_PUBLIC_URL` | Prod health-check URL |
-
-Create **Environments** named `dev` (auto-deploy) and `production` (requires approval).
-Deploy workflows skip gracefully until these secrets are configured.
+- Never commit API keys, `.env`, `.pem` files, or personal resume data
+- If you accidentally commit a secret, rotate it immediately and notify a maintainer

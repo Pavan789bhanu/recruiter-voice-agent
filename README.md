@@ -75,7 +75,7 @@ recruiter-voice-agent/
 │   ├── call_handler.py             # Per-call orchestration
 │   ├── ai_engine.py                # Claude integration + session state
 │   ├── stt.py                      # Deepgram real-time STT
-│   ├── tts.py                      # ElevenLabs / Polly TTS
+│   ├── tts.py                      # ElevenLabs TTS
 │   ├── human_ai_detector.py        # Caller classification
 │   ├── notifications.py            # Firebase push
 │   ├── config.py                   # Env-var configuration
@@ -146,18 +146,47 @@ See **[SETUP_GUIDE.md](SETUP_GUIDE.md)** for full AWS EC2 + Nginx + HTTPS + Twil
 
 ## Branch Strategy
 
-| Branch | Purpose |
-|--------|---------|
-| `main` | Production — deployed to AWS, protected, requires PR + review |
-| `dev` | Integration — all features merge here first, deployed to staging |
-| `feature/*` | Individual features — branch from `dev`, PR back to `dev` |
-| `hotfix/*` | Emergency fixes — branch from `main`, PR to both `main` and `dev` |
+This repository is **public**. Production branches are **maintainer-only**; community contributions go through `public`.
+
+| Branch | Access | Purpose |
+|--------|--------|---------|
+| `main` | 🔒 Maintainers only | Production — deployed to AWS |
+| `dev` | 🔒 Maintainers only | Integration / staging — deployed to dev environment |
+| `public` | ✅ Open to contributors | Community contributions — **open PRs here** |
+| `feature/*` | Contributors | Branch from `public`, PR back to `public` |
+
+```
+main (production, locked)
+ └── dev (integration, locked)
+      └── public (community contributions)
+           └── feature/your-feature
+```
+
+**Contributors:** fork the repo, branch from `public`, and open a PR targeting **`public`**.  
+PRs to `main` or `dev` from forks are automatically closed.
+
+Maintainers promote reviewed changes: `public` → `dev` → `main`.
+
+---
+
+## Contributing
+
+We welcome contributions! Please read **[CONTRIBUTING.md](CONTRIBUTING.md)** before opening a pull request.
+
+**Quick start for contributors:**
+
+1. Fork this repository
+2. `git checkout -b feature/my-fix public`
+3. Make your changes and run tests (`pytest tests/ -v`)
+4. Open a PR with **base branch: `public`**
+
+By contributing, you agree that your code will be reviewed and, if accepted, merged under the [MIT License](LICENSE).
 
 ---
 
 ## Environment Variables
 
-See [`.env.example`](.env.example) for the full list. Required keys:
+See [`.env.example`](backend/.env.example) for the full list. Required keys:
 
 ```
 TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER
@@ -182,10 +211,6 @@ PUBLIC_URL
 | ElevenLabs | ~$2–5/mo |
 
 ---
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
