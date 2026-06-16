@@ -2,7 +2,7 @@ name: PR Checks
 
 on:
   pull_request:
-    branches: [main, dev]
+    branches: [public, main, dev]
 
 concurrency:
   group: pr-checks-${{ github.head_ref }}
@@ -93,6 +93,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build Docker image
         run: docker build -t recruiter-voice-agent:ci backend/
+
+  summary-public:
+    name: All Public PR Checks Passed
+    if: github.base_ref == 'public'
+    needs: [secret-scan, lint, unit-tests, type-check, security, docker-build]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "All public PR checks passed."
 
   summary-dev:
     name: All Dev PR Checks Passed

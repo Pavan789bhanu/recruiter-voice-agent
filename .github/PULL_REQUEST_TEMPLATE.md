@@ -11,12 +11,17 @@
 - [ ] refactor — code change with no behavior change
 - [ ] ci — CI/CD changes
 
+## Target branch
+
+- [ ] This PR targets **`public`** (required for community contributions)
+- [ ] This PR targets `dev` or `main` (maintainers only)
+
 ## Checklist
 
 - [ ] Tests pass locally (`pytest tests/ -v`)
 - [ ] Lint passes (`ruff check backend/ tests/`)
 - [ ] No secrets, `.env`, or `resume_context.md` committed
-- [ ] PR targets the correct branch (`feature/*` → `dev`, `hotfix/*` → `main`)
+- [ ] PR description filled out
 
 ## Test plan
 

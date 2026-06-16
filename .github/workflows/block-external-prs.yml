@@ -1,0 +1,45 @@
+name: Block External PRs to Protected Branches
+
+# Closes fork PRs targeting main/dev and directs contributors to the public branch.
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, edited]
+    branches: [main, dev]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  block-fork-prs:
+    if: github.event.pull_request.head.repo.fork == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close PR and post guidance
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body: [
+                'Thanks for your interest in contributing!',
+                '',
+                '**`main` and `dev` are maintainer-only branches** and do not accept pull requests from forks.',
+                '',
+                'Please open your pull request against the **`public`** branch instead:',
+                '1. Fork this repository',
+                '2. Branch from `public`',
+                '3. Open a PR with **base: `public`**',
+                '',
+                'See [CONTRIBUTING.md](https://github.com/Pavan789bhanu/recruiter-voice-agent/blob/public/CONTRIBUTING.md) for the full workflow.'
+              ].join('\n')
+            });
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: pr.number,
+              state: 'closed'
+            });
