@@ -50,3 +50,4 @@ push-to-github.sh
 
 # Local dev tooling (not part of the application)
 pr_kit/
+reconcile_kit/
