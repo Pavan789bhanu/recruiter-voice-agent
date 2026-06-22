@@ -161,8 +161,8 @@ class CallOrchestrator:
                     self.call_sid,
                     "Sorry, we're unable to take your call right now. Please try again later.",
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[{self.call_sid}] Could not play fallback message: {e}")
             return
 
         try:
@@ -396,10 +396,11 @@ class CallOrchestrator:
         audio = await synthesize_speech(text, output_format="ulaw_8000")
         await self._play_audio(audio)
 
+    _ACK_PHRASES = ("Mm-hm.", "Sure.", "Right, yeah.", "Of course.")
+
     async def _speak_ack(self):
         """Play a short, natural filler to cover Claude's thinking time."""
-        import random
-        phrase = random.choice(["Mm-hm.", "Sure.", "Right, yeah.", "Of course."])
+        phrase = self._ACK_PHRASES[self.session.turn_count % len(self._ACK_PHRASES)]
         try:
             if phrase not in self._ack_cache:
                 self._ack_cache[phrase] = await synthesize_speech(
@@ -470,8 +471,8 @@ class CallOrchestrator:
                     "event": "clear",
                     "streamSid": self.stream_sid,
                 }))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[{self.call_sid}] Could not clear outbound buffer: {e}")
 
     # ── Human caller handling ─────────────────────────────────────────────────
 
