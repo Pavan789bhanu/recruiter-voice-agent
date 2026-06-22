@@ -16,12 +16,20 @@ import base64
 import json
 import logging
 import os
+import time
 
 from fastapi import WebSocket, WebSocketDisconnect
-from twilio.twiml.voice_response import Connect, Stream, VoiceResponse
+from twilio.twiml.voice_response import Connect, Gather, Stream, VoiceResponse
 
-from ai_engine import close_session, get_or_create_session
-from config import AI_CONFIDENCE_THRESHOLD, FORWARD_TO_NUMBER, PUBLIC_URL
+from ai_engine import close_session, get_or_create_session, opening_greeting
+from config import (
+    AI_CONFIDENCE_THRESHOLD,
+    CLOSING_GRACE_SEC,
+    ENABLE_HUMAN_FORWARDING,
+    FORWARD_TO_NUMBER,
+    IDLE_HANGUP_SEC,
+    PUBLIC_URL,
+)
 from human_ai_detector import HumanAIDetector
 from notifications import send_push_notification
 from stt import DeepgramSTT
@@ -31,6 +39,11 @@ logger = logging.getLogger(__name__)
 
 AUDIO_DIR = "/tmp/ai_recruiter_audio"
 os.makedirs(AUDIO_DIR, exist_ok=True)
+
+# Don't let a brief sound (a short "mm", a cough, line noise) cut the bot off in
+# the first moments of a reply — give the caller a chance to actually hear it.
+BARGE_IN_GRACE_SEC = 0.8
+
 
 
 # ── TwiML responses ───────────────────────────────────────────────────────────
@@ -47,7 +60,8 @@ def twiml_answer(call_sid: str) -> str:
 
     # Open WebSocket for audio streaming
     connect = Connect()
-    stream = Stream(url=f"{PUBLIC_URL}/ws/media/{call_sid}")
+    ws_url = PUBLIC_URL.replace("https://", "wss://").replace("http://", "ws://")
+    stream = Stream(url=f"{ws_url}/ws/media/{call_sid}")
     stream.parameter(name="track", value="inbound_track")
     connect.append(stream)
     response.append(connect)
@@ -62,6 +76,13 @@ def twiml_play_audio(audio_url: str) -> str:
     return str(response)
 
 
+def twiml_say(text: str) -> str:
+    """Fallback TwiML using Twilio's built-in TTS (no ElevenLabs needed)."""
+    response = VoiceResponse()
+    response.say(text, voice="Polly.Joanna-Neural")
+    return str(response)
+
+
 def twiml_forward_to_human(to_number: str) -> str:
     """TwiML to forward the call to the real user's phone."""
     response = VoiceResponse()
@@ -70,6 +91,21 @@ def twiml_forward_to_human(to_number: str) -> str:
         voice="Polly.Joanna-Neural",
     )
     response.dial(to_number)
+    return str(response)
+
+
+def twiml_gather_fallback(call_sid: str) -> str:
+    """Gather DTMF/speech when streaming isn't available."""
+    response = VoiceResponse()
+    gather = Gather(
+        input="speech",
+        action=f"{PUBLIC_URL}/webhook/speech/{call_sid}",
+        method="POST",
+        timeout=5,
+        speech_timeout="auto",
+        language="en-US",
+    )
+    response.append(gather)
     return str(response)
 
 
@@ -91,54 +127,148 @@ class CallOrchestrator:
         self.ai_active = True   # can be toggled remotely via REST
         self._response_lock = asyncio.Lock()
 
+        # ── Turn-taking state ─────────────────────────────────────────────────
+        self._speaking = False                 # is the bot currently playing audio?
+        self._speak_start_ts = 0.0             # when current playback began (monotonic)
+        self._play_task: asyncio.Task | None = None   # current playback task
+        self._pending: list[str] = []          # final fragments for the current turn
+        self._greeting_task: asyncio.Task | None = None
+        self._handle_task: asyncio.Task | None = None
+        self._idle_task: asyncio.Task | None = None    # auto-hangup-after-silence timer
+        self._hung_up = False                  # guard so we only hang up once
+        self._closing = False                  # model signalled end; awaiting caller's goodbye
+        self._ack_cache: dict[str, bytes] = {}  # cached filler audio (ulaw bytes)
+        self._turn_epoch = 0                   # bumped whenever the caller speaks again
+
     async def run(self):
         """Main loop — reads audio frames from Twilio Media Streams."""
         logger.info(f"[{self.call_sid}] Media stream connected")
 
-        async with DeepgramSTT(on_transcript=self._on_transcript) as stt:
+        try:
+            stt_cm = DeepgramSTT(
+                on_transcript=self._on_transcript,
+                on_speech_started=self._on_speech_started,
+                on_utterance_end=self._on_utterance_end,
+            )
+            stt = await stt_cm.__aenter__()
+        except Exception as e:
+            logger.error(
+                f"[{self.call_sid}] Could not connect Deepgram STT ({e}). "
+                "Check DEEPGRAM_API_KEY is valid and the project has credits."
+            )
             try:
-                # Send greeting via TTS before caller speaks
-                await self._play_greeting()
+                await _twilio_say(
+                    self.call_sid,
+                    "Sorry, we're unable to take your call right now. Please try again later.",
+                )
+            except Exception:
+                pass
+            return
 
-                async for raw in self.ws.iter_text():
-                    msg = json.loads(raw)
-                    event = msg.get("event")
+        try:
+            async for raw in self.ws.iter_text():
+                msg = json.loads(raw)
+                event = msg.get("event")
 
-                    if event == "connected":
-                        logger.debug(f"[{self.call_sid}] Stream connected")
+                if event == "connected":
+                    logger.debug(f"[{self.call_sid}] Stream connected")
 
-                    elif event == "start":
-                        self.stream_sid = msg["start"]["streamSid"]
-                        logger.info(f"[{self.call_sid}] Stream started: {self.stream_sid}")
+                elif event == "start":
+                    self.stream_sid = msg["start"]["streamSid"]
+                    logger.info(f"[{self.call_sid}] Stream started: {self.stream_sid}")
+                    # Greet only now — we need streamSid to send audio back over the WS.
+                    # Run it in the background so this loop keeps ingesting caller
+                    # audio (enables barge-in even during the greeting).
+                    self._greeting_task = asyncio.create_task(self._play_greeting())
 
-                    elif event == "media":
-                        # Decode mulaw audio and send to Deepgram
-                        audio_b64 = msg["media"]["payload"]
-                        audio_bytes = base64.b64decode(audio_b64)
-                        await stt.send_audio(audio_bytes)
+                elif event == "media":
+                    # Decode mulaw audio and send to Deepgram
+                    audio_b64 = msg["media"]["payload"]
+                    audio_bytes = base64.b64decode(audio_b64)
+                    await stt.send_audio(audio_bytes)
 
-                    elif event == "stop":
-                        logger.info(f"[{self.call_sid}] Stream stopped")
-                        break
+                elif event == "stop":
+                    logger.info(f"[{self.call_sid}] Stream stopped")
+                    break
 
-            except WebSocketDisconnect:
-                logger.info(f"[{self.call_sid}] WebSocket disconnected")
-            except Exception as e:
-                logger.error(f"[{self.call_sid}] Error in media stream: {e}")
-            finally:
-                transcript = close_session(self.call_sid)
-                await self._save_transcript(transcript)
-                logger.info(f"[{self.call_sid}] Call ended. Turns: {self.session.turn_count}")
+        except WebSocketDisconnect:
+            logger.info(f"[{self.call_sid}] WebSocket disconnected")
+        except Exception as e:
+            logger.error(f"[{self.call_sid}] Error in media stream: {e}")
+        finally:
+            # Stop any in-flight playback / background tasks before tearing down.
+            for t in (self._greeting_task, self._handle_task, self._play_task, self._idle_task):
+                if t and not t.done():
+                    t.cancel()
+            await stt_cm.__aexit__(None, None, None)
+            transcript = close_session(self.call_sid)
+            await self._save_transcript(transcript)
+            logger.info(f"[{self.call_sid}] Call ended. Turns: {self.session.turn_count}")
 
     # ── Transcript callback (called by Deepgram on each utterance) ────────────
 
+    async def _on_speech_started(self):
+        """
+        The caller started talking. If the bot is mid-sentence, stop so we don't
+        talk over them — but only after a short grace period, so a brief sound
+        right as a reply begins doesn't swallow the whole answer.
+
+        Note: we do NOT mark the reply stale here. A reply is only superseded by a
+        genuinely new completed turn (see _on_utterance_end); otherwise a stray
+        sound during generation would silently drop a perfectly good answer.
+        """
+        self._cancel_idle_hangup()   # caller is active — don't hang up
+        if self._speaking:
+            elapsed = time.monotonic() - self._speak_start_ts
+            if elapsed < BARGE_IN_GRACE_SEC:
+                return
+            logger.info(f"[{self.call_sid}] Barge-in — caller interrupted, stopping playback")
+            await self._stop_speaking()
+
     async def _on_transcript(self, text: str):
-        """Called when Deepgram returns a final transcript."""
+        """
+        A final transcript fragment. We DON'T respond here — the caller may only
+        be pausing mid-thought. We just collect fragments for the current turn
+        and wait for Deepgram's UtteranceEnd to tell us they've actually finished.
+        """
         logger.info(f"[{self.call_sid}] Heard: {text}")
-
-        # Broadcast to iOS app via WebSocket push (connected clients)
+        self._cancel_idle_hangup()   # caller responded — reset the idle timer
         await self._broadcast_transcript("recruiter", text)
+        self._pending.append(text)
 
+    async def _on_utterance_end(self):
+        """
+        The caller has finished their turn (sustained pause). Now — and only now —
+        assemble everything they said and respond to it as one complete thought.
+        """
+        combined = " ".join(self._pending).strip()
+        self._pending = []
+        if not combined:
+            return
+
+        # Ignore tiny backchannels ("yeah", "okay", "mm") — keep listening instead
+        # of derailing into a reply. The very first turn is always allowed through.
+        if self.session.turn_count > 0 and len(combined.split()) < 2:
+            logger.info(f"[{self.call_sid}] Ignoring backchannel: {combined!r}")
+            # If we're wrapping up, a quick "yeah/okay" is their goodbye — re-arm the
+            # short closing grace so we hang up shortly after, not on the 60s net.
+            if self._closing:
+                self._arm_idle_hangup(CLOSING_GRACE_SEC)
+            return
+
+        # A genuinely new, completed turn supersedes anything pending: bump the
+        # epoch so an in-flight reply for the previous turn is dropped.
+        self._turn_epoch += 1
+
+        # Cancel any in-flight reply AND stop its audio sender before starting a
+        # new turn, so the previous response can never play over this one.
+        if self._handle_task and not self._handle_task.done():
+            self._handle_task.cancel()
+        await self._stop_speaking()
+        self._handle_task = asyncio.create_task(self._handle_utterance(combined))
+
+    async def _handle_utterance(self, text: str):
+        """Classify (first turn) then generate + speak a response."""
         # Step 1: Classify caller if not yet determined
         if self.caller_type is None:
             result = self.detector.analyze(text)
@@ -155,8 +285,16 @@ class CallOrchestrator:
                 })
 
                 if self.caller_type == "human":
-                    await self._handle_human_caller()
-                    return
+                    if ENABLE_HUMAN_FORWARDING and FORWARD_TO_NUMBER:
+                        await self._handle_human_caller()
+                        return
+                    # Forwarding disabled — don't tear down the call. Let the AI
+                    # agent keep handling it instead.
+                    logger.info(
+                        f"[{self.call_sid}] Human detected but forwarding disabled — "
+                        "AI will continue handling the call."
+                    )
+                    self.caller_type = "ai"
 
         # Step 2: If AI caller (or still classifying), generate AI response
         if self.caller_type != "human" and self.ai_active:
@@ -166,32 +304,174 @@ class CallOrchestrator:
 
     async def _generate_and_play(self, recruiter_text: str):
         async with self._response_lock:
+            epoch = self._turn_epoch       # snapshot: detect if caller speaks again
             self.session.add_recruiter(recruiter_text)
-            response_text = self.session.generate_response()
-            logger.info(f"[{self.call_sid}] Responding: {response_text[:80]}...")
 
+            # Generate in a worker thread (the Anthropic SDK call is blocking) so
+            # we can fill the wait with a short acknowledgment if it runs long.
+            gen_task = asyncio.create_task(asyncio.to_thread(self.session.generate_response))
+            done, _ = await asyncio.wait({gen_task}, timeout=0.6)
+            if gen_task not in done and self._turn_epoch == epoch:
+                # Claude is taking a moment — cover the silence with a quick filler.
+                await self._speak_ack()
+            response_text = await gen_task
+
+            # If the caller started speaking again while we were thinking, this
+            # reply is stale — stay quiet and let their new turn take over.
+            if self._turn_epoch != epoch:
+                logger.info(f"[{self.call_sid}] Caller resumed; dropping stale reply")
+                return
+
+            logger.info(f"[{self.call_sid}] Responding: {response_text[:80]}...")
             await self._broadcast_transcript("candidate", response_text)
-            await self._play_text(response_text)
+            await self._speak(response_text)
+
+            if self.session.call_complete:
+                # The model decided the conversation is wrapping up. DON'T hang up
+                # yet — the bot just said its goodbye; give the caller a few seconds
+                # to say theirs. If they speak, the call continues naturally; if they
+                # stay silent, the closing-grace timer hangs up.
+                self._closing = True
+                logger.info(f"[{self.call_sid}] Model signalled end — awaiting caller's goodbye.")
+                self._arm_idle_hangup(CLOSING_GRACE_SEC)
+            else:
+                # Not over. Arm only a GENEROUS safety net for a truly abandoned
+                # line (reset the moment the caller speaks). This is a last resort,
+                # not how normal calls end — normal calls end via the model's signal.
+                self._closing = False
+                if IDLE_HANGUP_SEC > 0:
+                    self._arm_idle_hangup(IDLE_HANGUP_SEC)
 
     async def _play_greeting(self):
-        greeting = self.session.greeting()
+        # Keep the opener short and non-leading so the caller explains why they're
+        # calling. Name is derived from the resume (not hardcoded).
+        greeting = opening_greeting()
+        self.session.add_candidate(greeting)
         await self._broadcast_transcript("candidate", greeting)
-        await self._play_text(greeting)
+        await self._speak(greeting)
+        # If the caller never says anything at all, don't sit on an open (billed)
+        # line forever — generous safety net only.
+        if IDLE_HANGUP_SEC > 0:
+            self._arm_idle_hangup(IDLE_HANGUP_SEC)
 
-    async def _play_text(self, text: str):
-        """Synthesize text and send audio back via Twilio."""
+    # ── Idle auto-hangup (generous safety net for abandoned lines only) ───────
+
+    def _cancel_idle_hangup(self):
+        if self._idle_task and not self._idle_task.done():
+            self._idle_task.cancel()
+        self._idle_task = None
+
+    def _arm_idle_hangup(self, seconds: float):
+        """(Re)start the silence timer; if it elapses with no caller activity, hang up."""
+        self._cancel_idle_hangup()
+        self._idle_task = asyncio.create_task(self._idle_then_hangup(seconds))
+
+    async def _idle_then_hangup(self, seconds: float):
         try:
-            audio_bytes = await synthesize_speech(text)
-            # Save to file and use Twilio's REST API to play it
-            filename = f"{self.call_sid}_{self.session.turn_count}.mp3"
-            filepath = os.path.join(AUDIO_DIR, filename)
-            with open(filepath, "wb") as f:
-                f.write(audio_bytes)
+            await asyncio.sleep(seconds)
+        except asyncio.CancelledError:
+            return   # caller spoke — call continues
+        logger.info(f"[{self.call_sid}] No caller activity for {seconds:.0f}s — ending call.")
+        await self._hangup()
 
-            audio_url = f"{PUBLIC_URL}/audio/{filename}"
-            await _twilio_play(self.call_sid, audio_url)
+    async def _hangup(self):
+        """Politely end the Twilio call so we stop billing on an idle line."""
+        if self._hung_up:
+            return
+        self._hung_up = True
+        await self._stop_speaking()
+        try:
+            await _twilio_hangup(self.call_sid)
+            logger.info(f"[{self.call_sid}] Call hung up via Twilio REST.")
         except Exception as e:
-            logger.error(f"[{self.call_sid}] TTS/play error: {e}")
+            logger.error(f"[{self.call_sid}] Hangup failed: {e}")
+
+    # ── Speaking (interruptible playback) ─────────────────────────────────────
+
+    async def _speak(self, text: str):
+        """
+        Synthesize `text` and play it to the caller as a cancellable task,
+        so a barge-in can stop it mid-sentence.
+        """
+        audio = await synthesize_speech(text, output_format="ulaw_8000")
+        await self._play_audio(audio)
+
+    async def _speak_ack(self):
+        """Play a short, natural filler to cover Claude's thinking time."""
+        import random
+        phrase = random.choice(["Mm-hm.", "Sure.", "Right, yeah.", "Of course."])
+        try:
+            if phrase not in self._ack_cache:
+                self._ack_cache[phrase] = await synthesize_speech(
+                    phrase, output_format="ulaw_8000"
+                )
+            await self._play_audio(self._ack_cache[phrase])
+        except Exception as e:
+            logger.warning(f"[{self.call_sid}] Ack playback skipped: {e}")
+
+    async def _play_audio(self, audio: bytes):
+        """
+        Stream mu-law audio back to the caller as outbound Media Stream frames
+        over the SAME WebSocket, as a cancellable task.
+
+        We must NOT use Twilio REST `calls.update(twiml=...)` here: that replaces
+        the running <Connect><Stream> TwiML and tears down the media stream,
+        ending the call after one playback.
+        """
+        if not self.stream_sid:
+            logger.warning(f"[{self.call_sid}] No stream_sid yet; cannot play audio")
+            return
+
+        async def _sender():
+            # Chunk into ~20ms frames (160 bytes @ 8kHz mu-law) and pace them so
+            # the bot's audio plays in real time — which makes barge-in responsive
+            # (we stop sending the instant the caller speaks instead of having
+            # already dumped the whole clip into Twilio's buffer).
+            frame = 160
+            for i in range(0, len(audio), frame):
+                payload = base64.b64encode(audio[i:i + frame]).decode("ascii")
+                await self.ws.send_text(json.dumps({
+                    "event": "media",
+                    "streamSid": self.stream_sid,
+                    "media": {"payload": payload},
+                }))
+                await asyncio.sleep(0.018)  # ~20ms per frame, slight headroom
+            await self.ws.send_text(json.dumps({
+                "event": "mark",
+                "streamSid": self.stream_sid,
+                "mark": {"name": f"turn-{self.session.turn_count}"},
+            }))
+
+        self._speaking = True
+        self._speak_start_ts = time.monotonic()
+        self._play_task = asyncio.create_task(_sender())
+        try:
+            await self._play_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"[{self.call_sid}] TTS/stream error: {e}")
+        finally:
+            self._speaking = False
+
+    async def _stop_speaking(self):
+        """Cancel in-flight playback and flush Twilio's outbound buffer."""
+        self._speaking = False
+        if self._play_task and not self._play_task.done():
+            self._play_task.cancel()
+            try:
+                await self._play_task
+            except asyncio.CancelledError:
+                pass
+        if self.stream_sid:
+            # `clear` tells Twilio to drop any audio it has buffered for playback.
+            try:
+                await self.ws.send_text(json.dumps({
+                    "event": "clear",
+                    "streamSid": self.stream_sid,
+                }))
+            except Exception:
+                pass
 
     # ── Human caller handling ─────────────────────────────────────────────────
 
@@ -242,12 +522,44 @@ async def _twilio_play(call_sid: str, audio_url: str):
     from twilio.rest import Client
 
     from config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
-    loop = asyncio.get_running_loop()
+    loop = asyncio.get_event_loop()
     await loop.run_in_executor(
         None,
         lambda: Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
             .calls(call_sid)
             .update(twiml=twiml_play_audio(audio_url))
+    )
+
+
+async def _twilio_say(call_sid: str, text: str):
+    """Speak text into an ongoing call using Twilio's built-in TTS (ElevenLabs fallback)."""
+    import asyncio
+
+    from twilio.rest import Client
+
+    from config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None,
+        lambda: Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            .calls(call_sid)
+            .update(twiml=twiml_say(text))
+    )
+
+
+async def _twilio_hangup(call_sid: str):
+    """End an ongoing call via the Twilio REST API (stops billing)."""
+    import asyncio
+
+    from twilio.rest import Client
+
+    from config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None,
+        lambda: Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            .calls(call_sid)
+            .update(status="completed")
     )
 
 
@@ -258,7 +570,7 @@ async def _twilio_redirect(call_sid: str, to_number: str):
     from twilio.rest import Client
 
     from config import TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
-    loop = asyncio.get_running_loop()
+    loop = asyncio.get_event_loop()
     await loop.run_in_executor(
         None,
         lambda: Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)

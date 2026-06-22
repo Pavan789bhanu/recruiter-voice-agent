@@ -40,5 +40,20 @@ ENABLE_HUMAN_FORWARDING = os.environ.get("ENABLE_HUMAN_FORWARDING", "false").low
 # ── AI Detection thresholds ──────────────────────────────────────────────────
 AI_CONFIDENCE_THRESHOLD = float(os.environ.get("AI_CONFIDENCE_THRESHOLD", "0.65"))
 
+# ── Auto-hangup ───────────────────────────────────────────────────────────────
+# Normal calls end when the MODEL decides the conversation is over (it appends a
+# silent [[END_CALL]] marker — see ai_engine). This is NOT time-based.
+#
+# When the model signals the call is wrapping up, the bot says its closing line and
+# then waits this long for the caller's own goodbye before dropping. If the caller
+# speaks, the conversation continues naturally; if silent, we hang up. This is the
+# polite end-of-call handshake — not a mid-conversation timer.
+CLOSING_GRACE_SEC = float(os.environ.get("CLOSING_GRACE_SEC", "7"))
+
+# IDLE_HANGUP_SEC is only a generous safety net for a truly abandoned line (caller
+# silent and never hangs up). It resets on any caller activity, so it won't cut off
+# someone pausing to take notes. Set to 0 to disable the safety net entirely.
+IDLE_HANGUP_SEC = float(os.environ.get("IDLE_HANGUP_SEC", "60"))
+
 # ── Resume context file ───────────────────────────────────────────────────────
 RESUME_FILE          = os.environ.get("RESUME_FILE", "resume_context.md")
