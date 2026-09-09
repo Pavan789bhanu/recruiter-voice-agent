@@ -158,3 +158,23 @@ class HumanAIDetector:
             if re.search(pattern, text, re.IGNORECASE):
                 signals.append(f"human_marker:{pattern[:30]}")
         return signals
+
+
+# ── Quick test ────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    detector = HumanAIDetector()
+
+    samples = [
+        ("AI", "Hi this is Alex calling from our talent acquisition team. I'm reaching out regarding your application for the Software Engineer position we have available. Is this a good time to speak?"),
+        ("HUMAN", "Hey um, hi, is this Venu? Yeah so I uh, I came across your resume and I wanted to chat about a role we're hiring for."),
+    ]
+
+    for label, text in samples:
+        detector.reset()
+        result = detector.analyze(text)
+        if result is None:
+            print(f"[{label}] → no decision yet\n")
+            continue
+        print(f"[{label}] → is_ai={result.is_ai}, confidence={result.confidence:.2f}")
+        print(f"  Signals: {result.signals[:3]}")
+        print(f"  → {result.recommendation}\n")

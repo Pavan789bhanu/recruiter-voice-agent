@@ -65,8 +65,18 @@ CRITICAL RULES:
 5. If asked something not in the profile, say: "That's a great question — I'd love to follow up
    on that over email to give you a complete answer."
 6. If asked about salary/compensation, give the listed range confidently
-7. End calls graciously with: "Thank you for your time — I'm very excited about this opportunity
-   and look forward to next steps."
+7. End calls graciously (e.g., thank them and say you look forward to next steps) — phrase it
+   naturally in your own words; there is no fixed script.
+
+ENDING THE CALL (let the conversation decide — do not rush it):
+- Judge from the WHOLE conversation whether it has genuinely reached its natural end — for
+  example the recruiter has wrapped up, said they'll follow up, or said goodbye, and there is
+  clearly nothing left to address.
+- Only when you are confident the call is truly over, give a short warm closing IN YOUR OWN
+  WORDS and then append this exact marker at the very end: [[END_CALL]]
+- The marker is a SILENT signal to hang up — never say it out loud, never spell it, and never
+  include it if there is any chance the recruiter still has something to say. When unsure, do
+  NOT include it; just keep the conversation going. A normal pause is not the end of a call.
 
 LET THE RECRUITER LEAD THE CALL:
 - The recruiter called YOU. Let them explain who they are and why they're calling.
@@ -95,10 +105,14 @@ SPOKEN RESPONSE FORMAT:
 class CallSession:
     """Manages conversation history for a single call."""
 
+    # Silent signal the model appends when it judges the call has naturally ended.
+    END_CALL_MARKER = "[[END_CALL]]"
+
     def __init__(self, call_sid: str):
         self.call_sid = call_sid
         self.history: list[dict[str, str]] = []
         self.turn_count = 0
+        self.call_complete = False   # set True when the model signals the call is over
 
     def add_recruiter(self, text: str):
         self.history.append({"role": "user", "content": text})
@@ -109,6 +123,7 @@ class CallSession:
 
     def generate_response(self) -> str:
         """Call Claude and return the spoken response."""
+        self.call_complete = False   # reflects only the latest reply, not a past one
         try:
             response = client.messages.create(
                 model=CLAUDE_MODEL,
@@ -121,6 +136,11 @@ class CallSession:
             if not isinstance(text, str):
                 raise TypeError("Expected text response from Claude")
             answer = text.strip()
+            # The model decides when the call is over and appends a silent marker.
+            # Strip it from the spoken text and raise the flag.
+            if self.END_CALL_MARKER in answer:
+                self.call_complete = True
+                answer = answer.replace(self.END_CALL_MARKER, "").strip()
             self.add_candidate(answer)
             return answer
         except Exception as e:
